@@ -1,0 +1,266 @@
+#! /bin/bash
+
+# chkconfig: 2345 90 10
+# description: Onion Router - A low-latency anonymous proxy
+
+# The exit codes returned are:
+#       0 - operation completed successfully. For "status", tor running.
+#       1 - For "status", tor not running.
+#       2 - Command not supported
+#       3 - Could not be started or reloaded
+#       4 - Could not be stopped
+#	5 - invalid torrc file (--verify-config failed)
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+DAEMON=/usr/bin/tor
+NAME=tor
+DESC="tor daemon"
+TORLOGDIR=/var/log/tor
+TORPIDDIR=/var/run/tor
+TORPID=$TORPIDDIR/tor.pid
+DEFAULTSFILE=/etc/default/$NAME
+DEFAULT_ARGS="--hush --defaults-torrc /etc/tor/tor-rpm-defaults-torrc"
+MULTI_ARGS=""
+VERIFY_ARGS="--verify-config $DEFAULT_ARGS"
+ARGS="$DEFAULT_ARGS"
+CONFDIR="/etc/tor/enabled"
+RUN_DAEMON="yes"
+MULTI_INSTANCE="no"
+
+# when in MULTI_INSTANCE mode: 
+# $0 {start|stop|reload|restart} [instance1 instanc2 instanceN  ...] 
+command=$1
+shift
+manualinstances=$*
+
+# Let's try to figure our some sane defaults:
+if [ -r /proc/sys/fs/file-max ]; then
+	system_max=`cat /proc/sys/fs/file-max`
+	if [ "$system_max" -gt "80000" ] ; then
+		MAX_FILEDESCRIPTORS=32768
+	elif [ "$system_max" -gt "40000" ] ; then
+		MAX_FILEDESCRIPTORS=16384
+	elif [ "$system_max" -gt "10000" ] ; then
+		MAX_FILEDESCRIPTORS=8192
+	else
+		MAX_FILEDESCRIPTORS=1024
+		cat << EOF
+
+Warning: Your system has very few filedescriptors available in total.
+
+Maybe you should try raising that by adding 'fs.file-max=100000' to your
+/etc/sysctl.conf file.  Feel free to pick any number that you deem appropriate.
+Then run 'sysctl -p'.  See /proc/sys/fs/file-max for the current value, and
+file-nr in the same directory for how many of those are used at the moment.
+
+EOF
+	fi
+else
+	MAX_FILEDESCRIPTORS=8192
+fi
+
+
+test -x $DAEMON || exit 0
+
+# Include tor defaults if available
+if [ -f $DEFAULTSFILE ] ; then
+	. $DEFAULTSFILE
+fi
+
+check_torpiddir () {
+	if test ! -d $TORPIDDIR; then
+		mkdir -m 02750 "$TORPIDDIR"
+		chown _tor:_tor "$TORPIDDIR"
+		! [ -x /sbin/restorecon ] || /sbin/restorecon "$TORPIDDIR"
+	fi
+
+	if test ! -x $TORPIDDIR; then
+		echo "cannot access $TORPIDDIR directory, are you root?"
+		exit 1
+	fi
+}
+
+check_torlogdir () {
+	if test ! -d $TORLOGDIR; then
+		mkdir -m 02750 "$TORLOGDIR"
+		chown _tor:_tor "$TORLOGDIR"
+		! [ -x /sbin/restorecon ] || /sbin/restorecon "$TORPIDDIR"
+	fi
+}
+
+
+check_config () {
+	# are we going to hit trac #15015 with this?
+	##
+	if ! $DAEMON $VERIFY_ARGS > /dev/null; then
+		echo "Checking if $NAME configuration is valid"
+		$DAEMON $VERIFY_ARGS >&2
+		exit 5
+	fi
+}
+
+
+execute () {
+case "$1" in
+  start)
+	if [ "$RUN_DAEMON" != "yes" ]; then
+		echo "Not starting $DESC (Disabled in $DEFAULTSFILE)."
+		return 0
+	fi
+
+	if [ -n "$MAX_FILEDESCRIPTORS" ]; then
+		ulimit -n "$MAX_FILEDESCRIPTORS"
+	fi
+
+	check_torpiddir
+	check_torlogdir
+	check_config
+
+	echo -n "Starting $NAME..."
+
+	if test -f $TORPID; then
+		echo " $NAME is already running."
+		return 1
+	else
+		if $DAEMON $ARGS
+		then
+			echo done.
+			return 0
+		else
+			echo failed.
+			return 3
+		fi
+	fi
+	;;
+  stop)
+	echo -n "Stopping $NAME..."
+	pid=`cat $TORPID 2>/dev/null` || true
+
+	if test ! -f $TORPID -o -z "$pid"; then
+		echo " not running - there is no $TORPID"
+		return 4
+	fi
+	
+	if kill -SIGTERM `cat $TORPID`; then
+		echo done.
+		return 0
+	else
+		echo failed.
+		return 4
+	fi
+	
+	;;
+  reload|force-reload)
+	check_config
+
+	echo -n "Reloading $DESC's configuration..."
+	pid=`cat $TORPID 2>/dev/null` || true
+	if test ! -f $TORPID -o -z "$pid"; then
+		echo " not running - there is no $TORPID"
+		return 3
+	fi
+
+	if ! ps "$pid" >/dev/null 2>&1; then
+		echo " pid: $pid not running".
+		return 1
+	fi
+
+	if kill -SIGHUP $pid
+	then
+		echo reloaded.
+		return 0
+	else
+		echo failed.
+		return 1
+	fi
+	;;
+  restart)
+	check_config
+
+	execute stop
+	sleep 1
+	execute start
+	;;
+  status)
+	pid=`cat $TORPID 2>/dev/null` || true
+	if test ! -f $TORPID -o -z "$pid"; then
+		echo "$NAME apparently not running (no pid file)"
+		return 1
+	fi
+	if ps "$pid" >/dev/null 2>&1; then
+		echo "$NAME (pid $pid) running"
+		return 0
+	else
+		echo "$NAME is not running"
+		return 1
+	fi
+	;;
+  *)
+	echo "Usage: $0 {start|stop|restart|reload|force-reload|status}" >&2
+	return 1
+	;;
+esac
+}
+
+
+
+get_instances() {
+	
+	#get_instances exits on the first failed torrc file
+	
+	# if the user doesn't provide specific instance names take all *.torrc files in $CONFDIR into account
+	if [ -z $manualinstances ]
+	then
+		for config in $CONFDIR/*.torrc
+		do
+			base=${config##*/}
+			
+			VERIFY_ARGS="--verify-config -f $config"
+			NAME=${base%.torrc}
+			#else case is handled within check_config
+			if check_config; then
+				instances="$instances ${base%.torrc}"
+			fi
+		done
+
+	# verify user supplied instance names (user does not provide them with .torrc suffix)
+	else	
+		for config in $manualinstances
+		do
+			VERIFY_ARGS="--verify-config -f $CONFDIR/$config.torrc"
+			NAME=$config
+			#else case is handled within check_config
+			if check_config; then
+				instances="$instances $config"
+			fi
+		done
+	fi
+}
+
+case "$command" in
+	start|stop|restart|reload|force-reload|status)
+		if [ $MULTI_INSTANCE == "yes" ]
+		then
+			RETVAL=0
+			get_instances
+
+			for instance in $instances
+			do
+				NAME=$instance
+				DESC=$instance
+				TORPID="$TORPIDDIR/$instance.pid"
+				ARGS="--hush -f $CONFDIR/$instance.torrc $MULTI_ARGS"
+				execute $command
+				status=$?
+				test $status -gt $RETVAL && RETVAL=$status
+			done
+			exit $RETVAL
+		else
+			execute $command
+		fi
+		;;
+	*)
+		execute
+		exit 1
+		;;
+esac
