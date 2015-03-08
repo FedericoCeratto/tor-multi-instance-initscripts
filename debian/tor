@@ -1,4 +1,5 @@
 #! /bin/bash
+# vim: set noexpandtab:
 
 ### BEGIN INIT INFO
 # Provides:          tor
@@ -264,61 +265,61 @@ esac
 
 get_instances() {
 
-    #get_instances exits on the first failed torrc file
+	#get_instances exits on the first failed torrc file
 
-    # if the user doesn't provide specific instance names take all *.torrc files in $CONFDIR into account
-    if [ -z $manualinstances ]
-    then
-        for config in $CONFDIR/*.torrc
-        do
-            base=${config##*/}
+	# if the user doesn't provide specific instance names take all *.torrc files in $CONFDIR into account
+	if [ -z $manualinstances ]
+	then
+		for config in $CONFDIR/*.torrc
+		do
+			base=${config##*/}
 
-            VERIFY_ARGS="--verify-config -f $config"
-            NAME=${base%.torrc}
-            #else case is handled within check_config
-            if check_config; then
-                instances="$instances ${base%.torrc}"
-            fi
-        done
+			VERIFY_ARGS="--verify-config -f $config"
+			NAME=${base%.torrc}
+			#else case is handled within check_config
+			if check_config; then
+				instances="$instances ${base%.torrc}"
+			fi
+		done
 
-    # verify user supplied instance names (user does not provide them with .torrc suffix)
-    else
-        for config in $manualinstances
-        do
-            VERIFY_ARGS="--verify-config -f $CONFDIR/$config.torrc"
-            NAME=$config
-            #else case is handled within check_config
-            if check_config; then
-                instances="$instances $config"
-            fi
-        done
-    fi
+	# verify user supplied instance names (user does not provide them with .torrc suffix)
+	else
+		for config in $manualinstances
+		do
+			VERIFY_ARGS="--verify-config -f $CONFDIR/$config.torrc"
+			NAME=$config
+			#else case is handled within check_config
+			if check_config; then
+				instances="$instances $config"
+			fi
+		done
+	fi
 }
 
 case "$command" in
-    start|stop|restart|reload|force-reload|status)
-        if [ $MULTI_INSTANCE == "yes" ]
-        then
-            RETVAL=0
-            get_instances
+	start|stop|restart|reload|force-reload|status)
+		if [ $MULTI_INSTANCE == "yes" ]
+		then
+			RETVAL=0
+			get_instances
 
-            for instance in $instances
-            do
-                NAME=$instance
-                DESC=$instance
-                TORPID="$TORPIDDIR/$instance.pid"
-                ARGS="--hush -f $CONFDIR/$instance.torrc $MULTI_ARGS"
-                execute $command
-                status=$?
-                test $status -gt $RETVAL && RETVAL=$status
-            done
-            exit $RETVAL
-        else
-            execute $command
-        fi
-        ;;
-    *)
-        execute
-        exit 1
-        ;;
+			for instance in $instances
+			do
+				NAME=$instance
+				DESC=$instance
+				TORPID="$TORPIDDIR/$instance.pid"
+				ARGS="--hush -f $CONFDIR/$instance.torrc $MULTI_ARGS"
+				execute $command
+				status=$?
+				test $status -gt $RETVAL && RETVAL=$status
+			done
+			exit $RETVAL
+		else
+			execute $command
+		fi
+		;;
+	*)
+		execute
+		exit 1
+		;;
 esac
